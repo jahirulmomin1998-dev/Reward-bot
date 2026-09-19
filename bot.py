@@ -1,144 +1,168 @@
 import os
 import asyncio
-import threading
 import logging
-import traceback
 import sqlite3
+import threading
 
 from flask import Flask
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import (
+    Update,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+)
 from telegram.ext import (
     Application,
     CommandHandler,
     CallbackQueryHandler,
-    ContextTypes
+    ContextTypes,
 )
+
+
+# =========================================================
+# SETTINGS
+# =========================================================
+
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+
+DB_FILE = "reward_bot.db"
+
+VIDEO_URL = "https://interactive-examples.mdn.mozilla.net/media/cc0-videos/flower.mp4"
+
+VIDEO_ID = "video_1"
+
+REWARD_COINS = 10
+
+WATCH_SECONDS = 10
+
+
+# =========================================================
+# LOGGING
+# =========================================================
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO
 )
 
-app = Flask(__name__)
-
-DB_FILE = "reward_bot.db"
-
-# Demo video
-VIDEO_URL = "https://interactive-examples.mdn.mozilla.net/media/cc0-videos/flower.mp4"
-
-VIDEO_ID = "video_1"
-REWARD_COINS = 10
-WATCH_SECONDS = 10
-
-# Prevent multiple rewards while the same video is being watched
-pending_videos = set()
+logger = logging.getLogger(__name__)
 
 
-# =========================
+# =========================================================
+# FLASK SERVER
+# =========================================================
+
+flask_app = Flask(__name__)
+
+
+@flask_app.route("/")
+def home():
+    return "Reward Bot is running!"
+
+
+def run_flask():
+    port = int(os.environ.get("PORT", 10000))
+
+    flask_app.run(
+        host="0.0.0.0",
+        port=port
+    )
+
+
+# =========================================================
 # DATABASE
-# =========================
+# =========================================================
 
-def init_database():
-    connection = sqlite3.connect(DB_FILE)
-    cursor = connection.cursor()
+def init_db():
 
+    conn = sqlite3.connect(DB_FILE)
+
+    cursor = conn.cursor()
+
+    # Users table
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY,
-            username TEXT,
             coins INTEGER DEFAULT 0
         )
     """)
 
+    # Watched videos table
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS watched_videos (
             user_id INTEGER,
             video_id TEXT,
-            watched_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             PRIMARY KEY (user_id, video_id)
         )
     """)
 
-    connection.commit()
-    connection.close()
+    conn.commit()
+
+    conn.close()
 
 
-def get_user(user_id, username=""):
-    connection = sqlite3.connect(DB_FILE)
-    cursor = connection.cursor()
+# =========================================================
+# USER FUNCTIONS
+# =========================================================
+
+def get_user(user_id):
+
+    conn = sqlite3.connect(DB_FILE)
+
+    cursor = conn.cursor()
 
     cursor.execute(
         "SELECT coins FROM users WHERE user_id = ?",
         (user_id,)
     )
 
-    user = cursor.fetchone()
+    result = cursor.fetchone()
 
-    if user is None:
+    if result is None:
+
         cursor.execute(
-            """
-            INSERT INTO users (user_id, username, coins)
-            VALUES (?, ?, ?)
-            """,
-            (user_id, username, 0)
+            "INSERT INTO users (user_id, coins) VALUES (?, ?)",
+            (user_id, 0)
         )
 
-        connection.commit()
+        conn.commit()
+
         coins = 0
-    else:
-        coins = user[0]
 
-    connection.close()
+    else:
+
+        coins = result[0]
+
+    conn.close()
 
     return coins
 
 
-def add_coins(user_id, username, amount):
-    connection = sqlite3.connect(DB_FILE)
-    cursor = connection.cursor()
+def add_coins(user_id, amount):
+
+    conn = sqlite3.connect(DB_FILE)
+
+    cursor = conn.cursor()
 
     cursor.execute(
-        "SELECT user_id FROM users WHERE user_id = ?",
-        (user_id,)
+        "INSERT OR IGNORE INTO users (user_id, coins) VALUES (?, ?)",
+        (user_id, 0)
     )
-
-    user = cursor.fetchone()
-
-    if user is None:
-        cursor.execute(
-            """
-            INSERT INTO users (user_id, username, coins)
-            VALUES (?, ?, ?)
-            """,
-            (user_id, username, amount)
-        )
-    else:
-        cursor.execute(
-            """
-            UPDATE users
-            SET coins = coins + ?, username = ?
-            WHERE user_id = ?
-            """,
-            (amount, username, user_id)
-        )
-
-    connection.commit()
 
     cursor.execute(
-        "SELECT coins FROM users WHERE user_id = ?",
-        (user_id,)
+        "UPDATE users SET coins = coins + ? WHERE user_id = ?",
+        (amount, user_id)
     )
 
-    coins = cursor.fetchone()[0]
+    conn.commit()
 
-    connection.close()
-
-    return coins
+    conn.close()
 
 
 def already_watched(user_id, video_id):
-    connection = sqlite3.connect(DB_FILE)
-    cursor = connection.cursor()
+
+    conn = sqlite3.connect(DB_FILE)
+
+    cursor = conn.cursor()
 
     cursor.execute(
         """
@@ -151,14 +175,16 @@ def already_watched(user_id, video_id):
 
     result = cursor.fetchone()
 
-    connection.close()
+    conn.close()
 
     return result is not None
 
 
 def mark_video_watched(user_id, video_id):
-    connection = sqlite3.connect(DB_FILE)
-    cursor = connection.cursor()
+
+    conn = sqlite3.connect(DB_FILE)
+
+    cursor = conn.cursor()
 
     cursor.execute(
         """
@@ -169,61 +195,61 @@ def mark_video_watched(user_id, video_id):
         (user_id, video_id)
     )
 
-    connection.commit()
+    conn.commit()
 
-    inserted = cursor.rowcount
-
-    connection.close()
-
-    return inserted == 1
+    conn.close()
 
 
-# =========================
-# FLASK
-# =========================
-
-@app.route("/")
-def home():
-    return "Reward Bot is running!"
-
-
-def run_flask():
-    port = int(os.environ.get("PORT", "10000"))
-
-    app.run(
-        host="0.0.0.0",
-        port=port,
-        use_reloader=False
-    )
-
-
-# =========================
+# =========================================================
 # MAIN MENU
-# =========================
+# =========================================================
 
 def main_menu():
 
     keyboard = [
+
         [
             InlineKeyboardButton(
                 "🎬 Watch Video",
                 callback_data="watch_video"
             )
         ],
+
         [
             InlineKeyboardButton(
                 "💰 Balance",
                 callback_data="balance"
             ),
+
             InlineKeyboardButton(
                 "💸 Withdraw",
                 callback_data="withdraw"
             )
         ],
+
         [
             InlineKeyboardButton(
                 "ℹ️ Help",
                 callback_data="help"
+            )
+        ]
+
+    ]
+
+    return InlineKeyboardMarkup(keyboard)
+
+
+# =========================================================
+# BACK BUTTON
+# =========================================================
+
+def back_button():
+
+    keyboard = [
+        [
+            InlineKeyboardButton(
+                "⬅️ Back",
+                callback_data="back"
             )
         ]
     ]
@@ -231,35 +257,39 @@ def main_menu():
     return InlineKeyboardMarkup(keyboard)
 
 
-# =========================
-# START
-# =========================
+# =========================================================
+# START COMMAND
+# =========================================================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
-    user_id = update.effective_user.id
-    username = update.effective_user.username or ""
+    user = update.effective_user
 
-    get_user(user_id, username)
+    if user is None:
+        return
+
+    get_user(user.id)
 
     await update.message.reply_text(
+
         "🎉 Welcome to Reward Bot!\n\n"
-        "🎬 Watch videos and earn coins.\n"
-        "🪙 Reward: 10 Coins per video.\n\n"
-        "Choose an option:",
+        "Watch videos and earn Coins.\n\n"
+        "💰 10 Coins per completed video\n"
+        "🇮🇳 1000 Coins = ₹10\n\n"
+        "Choose an option below:",
+
         reply_markup=main_menu()
     )
 
 
-# =========================
-# GIVE VIDEO REWARD
-# =========================
+# =========================================================
+# WATCH REWARD FUNCTION
+# =========================================================
 
 async def reward_after_watch(
-    bot,
-    chat_id,
     user_id,
-    username
+    chat_id,
+    bot
 ):
 
     try:
@@ -268,48 +298,43 @@ async def reward_after_watch(
 
         # Check again
         if already_watched(user_id, VIDEO_ID):
+
             return
 
-        # Mark first
-        reward_allowed = mark_video_watched(
-            user_id,
-            VIDEO_ID
-        )
+        # Mark video as watched
+        mark_video_watched(user_id, VIDEO_ID)
 
-        if not reward_allowed:
-            return
+        # Add coins
+        add_coins(user_id, REWARD_COINS)
 
-        coins = add_coins(
-            user_id,
-            username,
-            REWARD_COINS
-        )
+        # Get updated balance
+        coins = get_user(user_id)
 
         await bot.send_message(
+
             chat_id=chat_id,
+
             text=(
-                "🎉 Video Reward!\n\n"
-                f"🪙 +{REWARD_COINS} Coins\n"
-                f"💰 Total Balance: {coins} Coins"
+                "🎉 Video Completed!\n\n"
+                f"🪙 +{REWARD_COINS} Coins added!\n\n"
+                f"💰 Your Balance: {coins} Coins\n\n"
+                "Keep watching videos to earn more."
             ),
+
             reply_markup=main_menu()
         )
 
-    except Exception as error:
+    except Exception as e:
 
-        print("REWARD ERROR:")
-        print(str(error))
-
-    finally:
-
-        pending_videos.discard(
-            (user_id, VIDEO_ID)
+        logger.error(
+            "Reward error: %s",
+            e
         )
 
 
-# =========================
+# =========================================================
 # BUTTON HANDLER
-# =========================
+# =========================================================
 
 async def button_handler(
     update: Update,
@@ -318,254 +343,160 @@ async def button_handler(
 
     query = update.callback_query
 
+    if query is None:
+        return
+
     await query.answer()
 
-    user_id = query.from_user.id
-    username = query.from_user.username or ""
+    user = query.from_user
 
-    get_user(user_id, username)
+    user_id = user.id
 
+    # =====================================================
     # WATCH VIDEO
+    # =====================================================
+
     if query.data == "watch_video":
 
+        # Check if already watched
         if already_watched(user_id, VIDEO_ID):
 
             await query.edit_message_text(
-                "✅ You already earned the reward "
-                "for this video.\n\n"
-                "🎬 New videos will be added soon.",
+
+                "🎬 Video Already Watched\n\n"
+                "You have already earned Coins from this video.\n\n"
+                "New videos will be added later.",
+
                 reply_markup=main_menu()
             )
 
             return
 
-        if (user_id, VIDEO_ID) in pending_videos:
+        # Check pending
+        pending_videos = context.application.bot_data.setdefault(
+            "pending_videos",
+            set()
+        )
+
+        if user_id in pending_videos:
 
             await query.edit_message_text(
-                "⏳ Your video reward is already processing.\n\n"
+
+                "⏳ Your video is already being processed.\n\n"
                 "Please wait 10 seconds.",
+
                 reply_markup=main_menu()
             )
 
             return
 
-        pending_videos.add(
-            (user_id, VIDEO_ID)
-        )
+        # Add pending
+        pending_videos.add(user_id)
 
         try:
 
-            await query.message.reply_video(
+            # Edit old message
+            await query.edit_message_text(
+                "🎬 Loading video...\n\n"
+                "Watch the video for 10 seconds.\n"
+                "After completion you will receive 10 Coins."
+            )
+
+            # Send video
+            await context.bot.send_video(
+
+                chat_id=query.message.chat_id,
+
                 video=VIDEO_URL,
+
                 caption=(
                     "🎬 Watch this video\n\n"
-                    "⏱️ Watch for 10 seconds.\n"
+                    "⏱️ Watch for 10 seconds\n"
                     "🪙 Reward: +10 Coins"
                 ),
-                supports_streaming=True
+
+                supports_streaming=True,
+
+                reply_markup=back_button()
             )
 
-            await query.edit_message_text(
-                "🎬 Video sent!\n\n"
-                "⏱️ Watch for 10 seconds.\n"
-                "🪙 Your +10 Coins reward is processing...",
-                reply_markup=main_menu()
-            )
-
+            # Start reward timer
             asyncio.create_task(
+
                 reward_after_watch(
-                    context.bot,
-                    query.message.chat_id,
                     user_id,
-                    username
+                    query.message.chat_id,
+                    context.bot
                 )
             )
 
-        except Exception as error:
+        except Exception as e:
 
-            pending_videos.discard(
-                (user_id, VIDEO_ID)
+            logger.error(
+                "Video error: %s",
+                e
             )
 
-            print("VIDEO ERROR:")
-            print(str(error))
+            await context.bot.send_message(
 
-            await query.edit_message_text(
-                "❌ Sorry, the video could not be loaded.\n\n"
-                "Please try again later.",
+                chat_id=query.message.chat_id,
+
+                text=(
+                    "❌ Video could not be loaded.\n\n"
+                    "Please try again."
+                ),
+
                 reply_markup=main_menu()
             )
 
+            pending_videos.discard(user_id)
+
+
+        return
+
+
+    # =====================================================
     # BALANCE
+    # =====================================================
+
     elif query.data == "balance":
 
-        coins = get_user(
-            user_id,
-            username
-        )
+        coins = get_user(user_id)
 
         await query.edit_message_text(
+
             "💰 Your Balance\n\n"
             f"🪙 Coins: {coins}\n\n"
-            "💵 1000 Coins = ₹10",
+            "🇮🇳 Withdrawal Rate:\n"
+            "1000 Coins = ₹10",
+
             reply_markup=main_menu()
         )
 
+        return
+
+
+    # =====================================================
     # WITHDRAW
+    # =====================================================
+
     elif query.data == "withdraw":
 
-        coins = get_user(
-            user_id,
-            username
-        )
+        coins = get_user(user_id)
 
         await query.edit_message_text(
+
             "💸 Withdraw\n\n"
+
             f"🪙 Your Balance: {coins} Coins\n\n"
+
             "Withdrawal options:\n\n"
+
             "1000 Coins → ₹10\n"
             "2000 Coins → ₹20\n"
             "3000 Coins → ₹30\n"
             "4000 Coins → ₹40\n"
             "5000 Coins → ₹50\n"
             "10000 Coins → ₹100\n\n"
+
             "🏦 UPI withdrawal will be added next.",
-            reply_markup=main_menu()
-        )
-
-    # HELP
-    elif query.data == "help":
-
-        await query.edit_message_text(
-            "ℹ️ Help\n\n"
-            "🎬 Watch Video\n"
-            "Watch videos and earn coins.\n\n"
-            "💰 Balance\n"
-            "Check your coin balance.\n\n"
-            "💸 Withdraw\n"
-            "Withdraw your INR rewards.\n\n"
-            "🪙 1000 Coins = ₹10",
-            reply_markup=main_menu()
-        )
-
-
-# =========================
-# HELP COMMAND
-# =========================
-
-async def help_command(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
-
-    await update.message.reply_text(
-        "Choose an option:",
-        reply_markup=main_menu()
-    )
-
-
-# =========================
-# TELEGRAM BOT
-# =========================
-
-async def run_bot():
-
-    token = os.environ.get("BOT_TOKEN")
-
-    if not token:
-
-        print("ERROR: BOT_TOKEN is missing.")
-
-        return
-
-    token = token.strip()
-
-    print("BOT_TOKEN found.")
-
-    init_database()
-
-    print("Database initialized.")
-
-    application = (
-        Application.builder()
-        .token(token)
-        .build()
-    )
-
-    application.add_handler(
-        CommandHandler("start", start)
-    )
-
-    application.add_handler(
-        CommandHandler("help", help_command)
-    )
-
-    application.add_handler(
-        CallbackQueryHandler(button_handler)
-    )
-
-    try:
-
-        print("Initializing bot...")
-
-        await application.initialize()
-
-        await application.start()
-
-        print("Starting Telegram polling...")
-
-        await application.updater.start_polling(
-            drop_pending_updates=True
-        )
-
-        print("BOT IS RUNNING SUCCESSFULLY!")
-
-        await asyncio.Event().wait()
-
-    except Exception as error:
-
-        print("====================================")
-        print("BOT STARTUP ERROR")
-        print("====================================")
-
-        print(str(error))
-
-        traceback.print_exc()
-
-        print("====================================")
-
-    finally:
-
-        try:
-
-            if application.updater:
-                await application.updater.stop()
-
-            await application.stop()
-
-            await application.shutdown()
-
-        except Exception:
-            pass
-
-
-# =========================
-# MAIN
-# =========================
-
-def main():
-
-    print("Starting Reward Bot...")
-
-    flask_thread = threading.Thread(
-        target=run_flask,
-        daemon=True
-    )
-
-    flask_thread.start()
-
-    asyncio.run(run_bot())
-
-
-if __name__ == "__main__":
-    main()
