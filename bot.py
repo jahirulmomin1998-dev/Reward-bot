@@ -3,6 +3,7 @@ import asyncio
 import threading
 import logging
 import traceback
+import sqlite3
 
 from flask import Flask
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -20,10 +21,100 @@ logging.basicConfig(
 
 app = Flask(__name__)
 
-# Temporary coin storage
-# Database will be added in the next step.
-user_coins = {}
+DB_FILE = "reward_bot.db"
 
+
+# =========================
+# DATABASE
+# =========================
+
+def init_database():
+    connection = sqlite3.connect(DB_FILE)
+
+    cursor = connection.cursor()
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            user_id INTEGER PRIMARY KEY,
+            username TEXT,
+            coins INTEGER DEFAULT 0
+        )
+    """)
+
+    connection.commit()
+    connection.close()
+
+
+def get_user(user_id, username=""):
+    connection = sqlite3.connect(DB_FILE)
+    cursor = connection.cursor()
+
+    cursor.execute(
+        "SELECT user_id, username, coins FROM users WHERE user_id = ?",
+        (user_id,)
+    )
+
+    user = cursor.fetchone()
+
+    if user is None:
+        cursor.execute(
+            "INSERT INTO users (user_id, username, coins) VALUES (?, ?, ?)",
+            (user_id, username, 0)
+        )
+        connection.commit()
+
+        coins = 0
+    else:
+        coins = user[2]
+
+    connection.close()
+
+    return coins
+
+
+def add_coins(user_id, username, amount):
+    connection = sqlite3.connect(DB_FILE)
+    cursor = connection.cursor()
+
+    cursor.execute(
+        "SELECT user_id FROM users WHERE user_id = ?",
+        (user_id,)
+    )
+
+    user = cursor.fetchone()
+
+    if user is None:
+        cursor.execute(
+            "INSERT INTO users (user_id, username, coins) VALUES (?, ?, ?)",
+            (user_id, username, amount)
+        )
+    else:
+        cursor.execute(
+            """
+            UPDATE users
+            SET coins = coins + ?, username = ?
+            WHERE user_id = ?
+            """,
+            (amount, username, user_id)
+        )
+
+    connection.commit()
+
+    cursor.execute(
+        "SELECT coins FROM users WHERE user_id = ?",
+        (user_id,)
+    )
+
+    coins = cursor.fetchone()[0]
+
+    connection.close()
+
+    return coins
+
+
+# =========================
+# FLASK
+# =========================
 
 @app.route("/")
 def home():
@@ -32,6 +123,7 @@ def home():
 
 def run_flask():
     port = int(os.environ.get("PORT", "10000"))
+
     app.run(
         host="0.0.0.0",
         port=port,
@@ -39,26 +131,48 @@ def run_flask():
     )
 
 
+# =========================
+# MENU
+# =========================
+
 def main_menu():
+
     keyboard = [
         [
-            InlineKeyboardButton("💰 Balance", callback_data="balance"),
-            InlineKeyboardButton("🎁 Earn Coins", callback_data="earn")
+            InlineKeyboardButton(
+                "💰 Balance",
+                callback_data="balance"
+            ),
+            InlineKeyboardButton(
+                "🎁 Earn Coins",
+                callback_data="earn"
+            )
         ],
         [
-            InlineKeyboardButton("💸 Withdraw", callback_data="withdraw"),
-            InlineKeyboardButton("ℹ️ Help", callback_data="help")
+            InlineKeyboardButton(
+                "💸 Withdraw",
+                callback_data="withdraw"
+            ),
+            InlineKeyboardButton(
+                "ℹ️ Help",
+                callback_data="help"
+            )
         ]
     ]
 
     return InlineKeyboardMarkup(keyboard)
 
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
+# =========================
+# START
+# =========================
 
-    if user_id not in user_coins:
-        user_coins[user_id] = 0
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    user_id = update.effective_user.id
+    username = update.effective_user.username or ""
+
+    get_user(user_id, username)
 
     await update.message.reply_text(
         "🎉 Welcome to Reward Bot!\n\n"
@@ -68,17 +182,28 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# =========================
+# BUTTON HANDLER
+# =========================
+
+async def button_handler(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
     query = update.callback_query
+
     await query.answer()
 
     user_id = query.from_user.id
+    username = query.from_user.username or ""
 
-    if user_id not in user_coins:
-        user_coins[user_id] = 0
+    get_user(user_id, username)
 
+    # BALANCE
     if query.data == "balance":
-        coins = user_coins[user_id]
+
+        coins = get_user(user_id, username)
 
         await query.edit_message_text(
             f"💰 Your Balance\n\n"
@@ -87,9 +212,14 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=main_menu()
         )
 
+    # EARN
     elif query.data == "earn":
-        user_coins[user_id] += 10
-        coins = user_coins[user_id]
+
+        coins = add_coins(
+            user_id,
+            username,
+            10
+        )
 
         await query.edit_message_text(
             f"🎁 Reward Received!\n\n"
@@ -98,17 +228,21 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=main_menu()
         )
 
+    # WITHDRAW
     elif query.data == "withdraw":
-        coins = user_coins[user_id]
+
+        coins = get_user(user_id, username)
 
         await query.edit_message_text(
             f"💸 Withdraw\n\n"
             f"🪙 Your Balance: {coins} Coins\n\n"
-            f"Withdrawal system will be added in the next step.",
+            f"Withdrawal system will be added next.",
             reply_markup=main_menu()
         )
 
+    # HELP
     elif query.data == "help":
+
         await query.edit_message_text(
             "ℹ️ Help\n\n"
             "💰 Balance - Check your coins\n"
@@ -119,24 +253,42 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# =========================
+# HELP COMMAND
+# =========================
+
+async def help_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
     await update.message.reply_text(
         "Choose an option:",
         reply_markup=main_menu()
     )
 
 
+# =========================
+# TELEGRAM BOT
+# =========================
+
 async def run_bot():
+
     token = os.environ.get("BOT_TOKEN")
 
     if not token:
+
         print("ERROR: BOT_TOKEN is missing.")
+
         return
 
     token = token.strip()
 
     print("BOT_TOKEN found.")
-    print("Creating Telegram application...")
+
+    init_database()
+
+    print("Database initialized.")
 
     application = (
         Application.builder()
@@ -157,9 +309,11 @@ async def run_bot():
     )
 
     try:
+
         print("Initializing bot...")
 
         await application.initialize()
+
         await application.start()
 
         print("Starting Telegram polling...")
@@ -173,26 +327,38 @@ async def run_bot():
         await asyncio.Event().wait()
 
     except Exception as error:
+
         print("====================================")
         print("BOT STARTUP ERROR")
         print("====================================")
+
         print(str(error))
+
         traceback.print_exc()
+
         print("====================================")
 
     finally:
+
         try:
+
             if application.updater:
                 await application.updater.stop()
 
             await application.stop()
+
             await application.shutdown()
 
         except Exception:
             pass
 
 
+# =========================
+# MAIN
+# =========================
+
 def main():
+
     print("Starting Reward Bot...")
 
     flask_thread = threading.Thread(
