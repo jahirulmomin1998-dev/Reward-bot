@@ -23,6 +23,11 @@ app = Flask(__name__)
 
 DB_FILE = "reward_bot.db"
 
+# Demo video link
+VIDEO_URL = "https://interactive-examples.mdn.mozilla.net/media/cc0-videos/flower.mp4"
+
+REWARD_COINS = 10
+
 
 # =========================
 # DATABASE
@@ -30,7 +35,6 @@ DB_FILE = "reward_bot.db"
 
 def init_database():
     connection = sqlite3.connect(DB_FILE)
-
     cursor = connection.cursor()
 
     cursor.execute("""
@@ -50,7 +54,7 @@ def get_user(user_id, username=""):
     cursor = connection.cursor()
 
     cursor.execute(
-        "SELECT user_id, username, coins FROM users WHERE user_id = ?",
+        "SELECT coins FROM users WHERE user_id = ?",
         (user_id,)
     )
 
@@ -62,13 +66,11 @@ def get_user(user_id, username=""):
             (user_id, username, 0)
         )
         connection.commit()
-
         coins = 0
     else:
-        coins = user[2]
+        coins = user[0]
 
     connection.close()
-
     return coins
 
 
@@ -108,7 +110,6 @@ def add_coins(user_id, username, amount):
     coins = cursor.fetchone()[0]
 
     connection.close()
-
     return coins
 
 
@@ -132,12 +133,18 @@ def run_flask():
 
 
 # =========================
-# MENU
+# MAIN MENU
 # =========================
 
 def main_menu():
 
     keyboard = [
+        [
+            InlineKeyboardButton(
+                "🎬 Watch Video",
+                callback_data="watch_video"
+            )
+        ],
         [
             InlineKeyboardButton(
                 "💰 Balance",
@@ -176,8 +183,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(
         "🎉 Welcome to Reward Bot!\n\n"
-        "💰 Earn coins and use them for rewards.\n\n"
-        "Choose an option below:",
+        "🎬 Watch videos and earn coins.\n"
+        "🪙 Reward: 10 Coins per video.\n\n"
+        "Choose an option:",
         reply_markup=main_menu()
     )
 
@@ -186,13 +194,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # BUTTON HANDLER
 # =========================
 
-async def button_handler(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     query = update.callback_query
-
     await query.answer()
 
     user_id = query.from_user.id
@@ -200,19 +204,67 @@ async def button_handler(
 
     get_user(user_id, username)
 
+    # WATCH VIDEO
+    if query.data == "watch_video":
+
+        keyboard = [
+            [
+                InlineKeyboardButton(
+                    "▶️ Watch Video",
+                    url=VIDEO_URL
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    "✅ I Watched",
+                    callback_data="video_watched"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    "⬅️ Back",
+                    callback_data="back"
+                )
+            ]
+        ]
+
+        await query.edit_message_text(
+            "🎬 Watch Video\n\n"
+            "Watch the video and then press "
+            "✅ I Watched.\n\n"
+            f"🪙 Reward: +{REWARD_COINS} Coins",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+
+    # VIDEO WATCHED
+    elif query.data == "video_watched":
+
+        coins = add_coins(
+            user_id,
+            username,
+            REWARD_COINS
+        )
+
+        await query.edit_message_text(
+            "🎉 Reward Added!\n\n"
+            f"🪙 +{REWARD_COINS} Coins\n"
+            f"💰 Total Balance: {coins} Coins",
+            reply_markup=main_menu()
+        )
+
     # BALANCE
-    if query.data == "balance":
+    elif query.data == "balance":
 
         coins = get_user(user_id, username)
 
         await query.edit_message_text(
             f"💰 Your Balance\n\n"
             f"🪙 Coins: {coins}\n\n"
-            f"Keep earning to increase your balance!",
+            f"1000 Coins = ₹10",
             reply_markup=main_menu()
         )
 
-    # EARN
+    # OLD EARN COINS
     elif query.data == "earn":
 
         coins = add_coins(
@@ -236,7 +288,14 @@ async def button_handler(
         await query.edit_message_text(
             f"💸 Withdraw\n\n"
             f"🪙 Your Balance: {coins} Coins\n\n"
-            f"Withdrawal system will be added next.",
+            "Withdrawal options:\n\n"
+            "1000 Coins → ₹10\n"
+            "2000 Coins → ₹20\n"
+            "3000 Coins → ₹30\n"
+            "4000 Coins → ₹40\n"
+            "5000 Coins → ₹50\n"
+            "10000 Coins → ₹100\n\n"
+            "UPI withdrawal will be added next.",
             reply_markup=main_menu()
         )
 
@@ -245,10 +304,18 @@ async def button_handler(
 
         await query.edit_message_text(
             "ℹ️ Help\n\n"
+            "🎬 Watch Video - Watch and earn coins\n"
             "💰 Balance - Check your coins\n"
-            "🎁 Earn Coins - Earn reward coins\n"
-            "💸 Withdraw - Withdraw your rewards\n\n"
-            "More features are coming soon!",
+            "💸 Withdraw - Withdraw INR rewards\n\n"
+            "🪙 1000 Coins = ₹10",
+            reply_markup=main_menu()
+        )
+
+    # BACK
+    elif query.data == "back":
+
+        await query.edit_message_text(
+            "Choose an option:",
             reply_markup=main_menu()
         )
 
@@ -257,10 +324,7 @@ async def button_handler(
 # HELP COMMAND
 # =========================
 
-async def help_command(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(
         "Choose an option:",
@@ -277,9 +341,7 @@ async def run_bot():
     token = os.environ.get("BOT_TOKEN")
 
     if not token:
-
         print("ERROR: BOT_TOKEN is missing.")
-
         return
 
     token = token.strip()
