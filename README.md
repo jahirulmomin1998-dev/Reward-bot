@@ -1,0 +1,2 @@
+# Reward-bot
+Rewardbot
